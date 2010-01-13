@@ -1,0 +1,7 @@
+#!/bin/rc
+clonefile=/net/ether0/clone
+<[4] $clonefile {
+	netdir=`{basename -d $clonefile} ^ / ^  `{cat /fd/4}
+	echo connect -1 >$netdir/ctl || exit 'cannot connect'
+	cat $netdir/data | xd -u -x2
+}

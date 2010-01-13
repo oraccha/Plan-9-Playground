@@ -1,0 +1,12 @@
+Plan 9 Playground: Some experimental programs of Plan 9 from Bell Labs.
+
+Copyright (c) 2010 oraccha
+
+This package includes:
+	- dialperf: network performance measurement tool
+	- pdump: packet snooping rc script
+
+
+This is the my Plan 9 daily blog:
+	http://d.hatena.ne.jp/oraccha
+
