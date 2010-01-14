@@ -1,5 +1,6 @@
 #include <u.h>
 #include <libc.h>
+#include <stdio.h>
 
 int sink;
 int len = 4096;
@@ -20,7 +21,7 @@ wtime(void)
 	}
 
 	tv = nsec();
-	return ((double)(tv - tv0) / 1e+6);
+	return ((double)(tv - tv0) / 1e+9);
 }
 
 void
@@ -58,12 +59,52 @@ remoteaddr(char *dir, char *laddr, int len)
 	getaddr(dir, laddr, len, 0);
 }
 
+int
+handshake(int fd, int issink)
+{
+	char buf[64];
+	int n;
+
+	if(issink){
+		n = read(fd, buf, sizeof(buf));
+		if(n < 0){
+			perror("read");
+			return -1;
+		}
+		if(sscanf(buf, "len=%d iter=%d", &len, &iter) != 2){
+			fprint(2, "handshake failed: invalid parameter: (%d)%s", n, buf);
+			return -1;
+		}
+	}else{
+		sprint(buf, "len=%d iter=%d", len, iter);
+		n = write(fd, buf, strlen(buf) + 1);
+		if(n < 0){
+			perror("write");
+			return -1;
+		}
+	}
+
+	if(combuf)
+		free(combuf);
+	combuf = malloc(len);
+	if(combuf == 0){
+		perror("malloc");
+		return -1;
+	}
+	memset(combuf, 0, len);
+
+	return 0;
+}
+
 void
 dosink(int fd)
 {
-	double start, end;
+	double start, end, elapse, total;
 	int i;
 	long c, n;
+
+	if(handshake(fd, 1) != 0)
+		return;
 
 	start = wtime();
 	for(i = 0; i < iter; i++){
@@ -79,16 +120,21 @@ dosink(int fd)
 	}
 	end = wtime();
 
-	print("%f sec %d bytes %f bps\n", end - start, len * iter, (double)(len * iter) / (end - start));
+	elapse = end - start;
+	total = (double)(len * iter);
+	print("%.3f sec %.3f MB %.3f MB/s\n", elapse, total / 1e+6, (total / 1e+6) / elapse);
 	return;
 }
 
 void
 doburst(int fd)
 {
-	double start, end;
+	double start, end, elapse, total;
 	int i;
 	long c, n;
+
+	if(handshake(fd, 0) != 0)
+		return;
 
 	start = wtime();
 	for(i = 0; i < iter; i++){
@@ -104,7 +150,9 @@ doburst(int fd)
 	}
 	end = wtime();
 
-	print("%f sec %d bytes %f bps\n", end - start, len * iter, (double)(len * iter) / (end - start));
+	elapse = end - start;
+	total = (double)(len * iter);
+	print("%.3f sec %.3f MB %.3f MB/s\n", elapse, total / 1e+6, (total / 1e+6) / elapse);
 	return;
 }
 
@@ -136,11 +184,6 @@ main(int argc, char *argv[])
 		}else
 			break;
 	}
-
-	combuf = malloc(len);
-	if(combuf == 0)
-		exits("malloc");
-	memset(combuf, 0, len);
 
 	if(sink){
 		/* RECEIVER SIDE */
