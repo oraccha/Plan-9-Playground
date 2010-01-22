@@ -62,24 +62,44 @@ remoteaddr(char *dir, char *laddr, int len)
 int
 handshake(int fd, int issink)
 {
-	char buf[64];
-	int n;
+	char msg[64];	/* It holds null terminated string. */
+#define MSGFMT ("len=%d iter=%d")
+	int msglen;
+#define BIT32SZ (sizeof(u32int))
+	int m, n;
 
 	if(issink){
-		n = read(fd, buf, sizeof(buf));
+		/* header (message length) */
+		m = readn(fd, &msglen, BIT32SZ);
+		if(m != BIT32SZ){
+		  fprint(2, "handshake failed: write");
+		  return -1;
+		}
+
+		/* body */
+		n = readn(fd, msg, msglen);
 		if(n < 0){
-			perror("read");
+			perror("handshake failed: read");
 			return -1;
 		}
-		if(sscanf(buf, "len=%d iter=%d", &len, &iter) != 2){
-			fprint(2, "handshake failed: invalid parameter: (%d)%s", n, buf);
+		if(sscanf(msg, MSGFMT, &len, &iter) != 2){
+			fprint(2, "handshake failed: invalid parameter: (%d)%s", n, msg);
 			return -1;
 		}
 	}else{
-		sprint(buf, "len=%d iter=%d", len, iter);
-		n = write(fd, buf, strlen(buf) + 1);
+		/* header (message length) */
+		sprintf(msg, MSGFMT, len, iter);
+		msglen = strlen(msg) + 1;
+		m = write(fd, &msglen, BIT32SZ);
+		if(m != BIT32SZ){
+		  fprint(2, "handshake failed: write");
+		  return -1;
+		}
+
+		/* body */
+		n = write(fd, msg, msglen);
 		if(n < 0){
-			perror("write");
+			perror("handshake failed: write");
 			return -1;
 		}
 	}
@@ -99,9 +119,9 @@ handshake(int fd, int issink)
 void
 dosink(int fd)
 {
-	double start, end, elapse, total;
+	double start, end, elapse;
 	int i;
-	long c, n;
+	long c, n, total = 0;
 
 	if(handshake(fd, 1) != 0)
 		return;
@@ -111,27 +131,31 @@ dosink(int fd)
 		c = 0;
 		while(c != len){
 			n = read(fd, combuf + c, len - c);
-			if(n < 0){
-				perror("dosink");
-				exits("read");
+			if(n < 0)
+				sysfatal("read: %r");
+			if(n == 0){
+				fprint(2, "connection closed\n");
+				total += c;
+				goto sinkend;
 			}
 			c += n;
 		}
+		total += c;
 	}
+ sinkend:
 	end = wtime();
 
 	elapse = end - start;
-	total = (double)(len * iter);
-	print("%.3f sec %.3f MB %.3f MB/s\n", elapse, total / 1e+6, (total / 1e+6) / elapse);
+	print("%.3f sec %d bytes %.3f MB/s\n", elapse, total, ((double)total / 1e+6) / elapse);
 	return;
 }
 
 void
 doburst(int fd)
 {
-	double start, end, elapse, total;
+	double start, end, elapse;
 	int i;
-	long c, n;
+	long c, n, total = 0;
 
 	if(handshake(fd, 0) != 0)
 		return;
@@ -141,18 +165,22 @@ doburst(int fd)
 		c = 0;
 		while(c != len){
 			n = write(fd, combuf + c, len - c);
-			if(n < 0){
-				perror("doburst");
-				exits("write");
+			if(n < 0)
+				sysfatal("write: %r");
+			if(n == 0){
+				fprint(2, "connection closed\n");
+				total += c;
+				goto burstend;
 			}
 			c += n;
 		}
+		total += c;
 	}
+ burstend:
 	end = wtime();
 
 	elapse = end - start;
-	total = (double)(len * iter);
-	print("%.3f sec %.3f MB %.3f MB/s\n", elapse, total / 1e+6, (total / 1e+6) / elapse);
+	print("%.3f sec %d bytes %.3f MB/s\n", elapse, total, ((double)total / 1e+6) / elapse);
 	return;
 }
 
@@ -193,12 +221,12 @@ main(int argc, char *argv[])
 		sprint(addr, "tcp!*!%s", port);
 		acfd = announce(addr, adir);
 		if(acfd < 0)
-			exits("announce");
+			sysfatal("announce: %r");
 
 		for(;;){
 			lcfd = listen(adir, ldir);
 			if(lcfd < 0)
-				exits("listen");
+				sysfatal("listen: %r");
 
 			switch(fork()){
 			case -1:
@@ -208,7 +236,7 @@ main(int argc, char *argv[])
 			case 0:
 				dfd = accept(lcfd, ldir);
 				if(dfd < 0)
-					exits("accept");
+					sysfatal("accept: %r");
 				localaddr(ldir, laddr, sizeof(laddr));
 				remoteaddr(ldir, raddr, sizeof(raddr));	
 				print("local %s connected with %s\n", laddr, raddr);
@@ -227,10 +255,15 @@ main(int argc, char *argv[])
 		if(argc != 1)
 			exits("no sink host.");
 
-		fd = dial(netmkaddr(argv[0], 0, port), 0, ldir, 0);
+		/* NOTE: Plan9port cannot handle extra arguments. */
+		fd = dial(netmkaddr(argv[0], "tcp", port), 0, 0, 0);
+		if (fd < 0)
+			sysfatal("dial: %r");
+#if 0
 		localaddr(ldir, laddr, sizeof(laddr));
 		remoteaddr(ldir, raddr, sizeof(raddr));
 		print("local %s connected with %s\n", laddr, raddr);
+#endif
 		doburst(fd);
 	}
 }
