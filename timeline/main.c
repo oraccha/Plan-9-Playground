@@ -43,17 +43,14 @@ fetch(char *file)
 		if(f < 0)
 			sysfatal("open: %r");
 
-		for(;;){
-			nr = read(p[0], buf, sizeof(buf));
-			if(nr < 0)
-				sysfatal("read: %r");
-			if(nr == 0)
-				break;
-
+		while((nr = read(p[0], buf, sizeof(buf))) > 0){
 			nw = write(f, buf, nr);
 			if(nw < 0)
 				sysfatal("write: %r");
 		}
+		if(nr < 0)
+			sysfatal("read: %r");
+
 		close(f);
 		close(p[0]);
 	}
@@ -79,7 +76,7 @@ watcher(void)
 		fetch(fname);
 		fd = open(fname, OREAD);
 		n = readn(fd, buf, BUFSIZ);
-		if(n < 0){
+		if(n <= 0){
 			fprint(2, "read failed.\n");
 			sleep(INTERVAL);
 			continue;
