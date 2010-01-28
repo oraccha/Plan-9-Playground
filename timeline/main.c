@@ -15,45 +15,50 @@ static vlong lastid;
 int
 fetch(char *file)
 {
-	int pid, p[2], f;
+	int ctlfd, conn, fd, newfd;
 	int nr, nw;
 	char buf[1024];
-	char cmd[64];
+	char url[128];
 
 	if(lastid)
-		sprint(cmd, "hget '%s?since_id=%lld'", HOME_TIMELINE_URL, lastid + 1);
+		sprint(url, "%s?since_id=%lld", HOME_TIMELINE_URL, lastid + 1);
 	else
-		sprint(cmd, "hget %s", HOME_TIMELINE_URL);
+		sprint(url, "%s", HOME_TIMELINE_URL);
 
-	if(pipe(p) < 0)
-		sysfatal("pipe: %r");
+	ctlfd = open("/mnt/web/clone", ORDWR);
+	if(ctlfd < 0)
+		sysfatal("open /mnt/web/clone: %r");
+	nr = read(ctlfd, buf, sizeof(buf));
+	if(nr < 0)
+		sysfatal("read: %r");
+	if(nr == 0)
+		sysfatal("read clone failed");
+	buf[nr] = 0;
+	conn = atoi(buf);
 
-	switch(pid = fork()){
-	case -1:
-		sysfatal("fork: %r");
-	case 0:
-		close(p[0]);
-		dup(p[1], 1);
-		execl("/bin/rc", "rc", "-c", cmd, nil);
-	default:
-		close(p[1]);
+	if(fprint(ctlfd, "url %s", url) <= 0)
+		sysfatal("write ctl failed 'url %s': %r", url);
 
-		sprint(file, "/tmp/tweet.%d", pid);
-		f = create(file, OWRITE, 0666);
-		if(f < 0)
-			sysfatal("open: %r");
+	snprint(buf, sizeof(buf), "/mnt/web/%d/body", conn);
+	fd = open(buf, OREAD);
+	if(fd < 0)
+		sysfatal("open %s: %r", buf);
 
-		while((nr = read(p[0], buf, sizeof(buf))) > 0){
-			nw = write(f, buf, nr);
-			if(nw < 0)
-				sysfatal("write: %r");
-		}
-		if(nr < 0)
-			sysfatal("read: %r");
+	sprint(file, "/tmp/tweet.%d", conn);
+	newfd = create(file, OWRITE, 0666);
+	if(newfd < 0)
+		sysfatal("create %s: %r", file);
 
-		close(f);
-		close(p[0]);
+	while((nr = read(fd, buf, sizeof(buf))) > 0){
+		nw = write(newfd, buf, nr);
+		if(nw < 0)
+			sysfatal("write: %r");
 	}
+	if(nr < 0)
+		sysfatal("read: %r");
+
+	close(newfd);
+	close(fd);
 
 	return 0;
 }
