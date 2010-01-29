@@ -1,6 +1,7 @@
 #include <u.h>
 #include <libc.h>
 #include <thread.h>
+#include <auth.h>
 #include "json.h"
 
 enum {
@@ -9,8 +10,20 @@ enum {
 };
 
 #define HOME_TIMELINE_URL "http://api.twitter.com/1/statuses/home_timeline.json"
+#define TWITTER_SERVER "api.twitter.com"
+#define TWITTER_REALM "Twitter API"
 
 static vlong lastid;
+
+void
+initauth()
+{
+	UserPasswd *up;
+
+	up = auth_getuserpasswd(auth_getkey, "proto=pass service=http server=%q realm=%q", TWITTER_SERVER, TWITTER_REALM);
+	if(up == nil)
+		sysfatal("auth_getuserpasswd: %r");
+}
 
 int
 fetch(char *file)
@@ -116,6 +129,7 @@ watcher(void)
 void
 main(int argc, char **argv)
 {
+	initauth();
 	watcher();
 
 	exits(nil);
