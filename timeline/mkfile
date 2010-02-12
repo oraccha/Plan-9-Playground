@@ -1,13 +1,14 @@
 </$objtype/mkfile
 BIN=/$objtype/bin
 
-TARG=timeline
+TARG=timeline\
+	ticker
 
 HFILES=json.h
 
 OFILES=\
 	json.$O\
-	main.$O\
+	ticker.$O\
 
 UPDATE=\
 	mkfile\
@@ -15,5 +16,15 @@ UPDATE=\
 	${OFILES:%.$O=%.c}\
 	${TARG:%=/386/bin/%}\
 
-</sys/src/cmd/mkone
+</sys/src/cmd/mkmany
 
+all:V:
+
+nuke:V:
+	rm -f *.[$OS] [$OS].$TARG $TARG
+
+$O.ticker: ticker.$O json.$O urlencode.$O
+	$LD -o $target $prereq
+
+$O.timeline: timeline.$O json.$O
+	$LD -o $target $prereq
