@@ -1,0 +1,26 @@
+</$objtype/mkfile
+
+TARG=yurex
+OFILES=\
+	yurexfs.$O\
+
+HFILES=\
+	../lib/usb.h\
+
+UPDATE=\
+	$HFILES\
+	${OFILES:%.$O=%.c}\
+	mkfile\
+	/sys/man/3/usb\
+
+LIB=../lib/usb.a$O
+
+BIN=/$objtype/bin/usb
+</sys/src/cmd/mkone
+
+CFLAGS=-I../lib $CFLAGS
+
+$LIB:
+	cd ../lib
+	mk install
+	mk clean
