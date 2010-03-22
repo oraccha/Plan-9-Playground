@@ -1,3 +1,10 @@
-Yet another YUREX driver for Plan 9.
+Yet another YUREX file system for Plan 9.
 It is based on go_vm's work: http://groups.google.com/group/plan9sheevaplug/web/yurex
 
+INSTRUCTION:
+	bind -c yurex /sys/src/cmd/usb/yurex
+	cd /sys/src/cmd/usb/yurex
+	mk install
+	usb/yurex
+	mount /srv/yurex /n/yurex
+	check /n/yurex/^(bbu mbbups)

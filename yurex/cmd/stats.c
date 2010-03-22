@@ -714,7 +714,7 @@ initmach(Machine *m, char *name)
 	if(loadbuf(m, &m->tempfd))
 		for(n=0; n < nelem(m->temp) && readnums(m, 2, a, 0); n++)
 			 m->temp[n] = a[0];
-	snprint(buf, sizeof buf, "%s/n/yurex/bbu", mpt);
+	snprint(buf, sizeof buf, "%s/n/yurex/mbbups", mpt);
 	m->yurexfd = open(buf, OREAD);
 	if(loadbuf(m, &m->yurexfd) && readnums(m, 1, a, 1))
 		memmove(&m->yurexbbu, a, sizeof(m->yurexbbu));
@@ -1013,7 +1013,7 @@ void
 yurexval(Machine *m, uvlong *v, uvlong *vmax, int)
 {
 	*v = m->yurexbbu;
-	*vmax = 1000;
+	*vmax = 10000;
 }
 
 void

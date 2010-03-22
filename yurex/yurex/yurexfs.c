@@ -3,7 +3,7 @@
 #include <fcall.h>
 #include <thread.h>
 #include <9p.h>
-#include <usb.h>
+#include "usb.h"
 
 enum
 {
@@ -27,7 +27,7 @@ enum
 enum
 {
 	Qbbu,
-	Qmbbu,
+	Qmbbups,
 };
 
 struct Yurex
@@ -38,19 +38,28 @@ struct Yurex
 	int	accepted_cmd;
 	ulong	curval;
 	ulong	oldval;
+	vlong	oldnsec;
 } yc;
 
 void 
 yurexread(Req *r)
 {
 	int qid = (int)r->fid->qid.path;
-	char data[32], *e;
+	char data[32];
+	vlong tnsec;
 
 	switch(qid){
 	case Qbbu:
 		seprint(data, data+sizeof(data), "%ld\n", yc.curval);
 		readstr(r, data);
 		break;
+	case Qmbbups:
+		tnsec = nsec();
+		if(tnsec == yc.oldnsec) tnsec++;
+		seprint(data, data+sizeof(data), "%lld\n", (yc.curval-yc.oldval)*1000*10000/((tnsec-yc.oldnsec)/100000));
+		readstr(r, data);
+		yc.oldval = yc.curval;
+		yc.oldnsec = tnsec;
 	}
 
 	respond(r, nil);
@@ -139,6 +148,7 @@ yurexwork(void *)
 			val = (buf[2]<<24) + (buf[3]<<16) + (buf[4]<<8) + buf[5];
 			if(yc.initialized == 0){
 				yc.oldval = val;
+				yc.oldnsec = nsec();
 				yc.initialized = 1;
 			}
 			yc.curval = val;
@@ -148,8 +158,6 @@ yurexwork(void *)
 			fprint(2, "YUREX DEBUG: unknown message: 0x%.2x\n", buf[0]);
 		}
 	}
-
-	sysfatal("YUREX DEBUG end");
 }
 
 void 
@@ -188,6 +196,7 @@ threadmain(int argc, char **argv)
 
 				fs.tree = alloctree(nil, nil, DMDIR|0777, destroyfile);
 				createfile(fs.tree->root, "bbu", nil, 0444, nil);
+				createfile(fs.tree->root, "mbbups", nil, 0444, nil);
 				threadpostmountsrv(&fs, "yurex", nil, MREPL|MCREATE);
 				proccreate(yurexwork, nil, Stack);
 			}
