@@ -1,0 +1,4 @@
+#!/bin/sh
+cd $HOME
+export PATH=$PATH:/usr/local/plan9/bin
+SHELL=rc /usr/local/plan9/bin/9term -W600x700 &
