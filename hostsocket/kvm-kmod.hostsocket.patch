@@ -1,0 +1,343 @@
+diff -rcs -x .git kvm-kmod.orig/include/arch/x86/kvm/kvm_main.c kvm-kmod/include/arch/x86/kvm/kvm_main.c
+*** kvm-kmod.orig/include/arch/x86/kvm/kvm_main.c	2010-07-23 17:56:11.000000000 +0900
+--- kvm-kmod/include/arch/x86/kvm/kvm_main.c	2010-07-22 15:29:32.000000000 +0900
+***************
+*** 1418,1423 ****
+--- 1418,1468 ----
+  	return 0;
+  }
+  
++ struct kvm_get_hva
++ {
++ 	__u64 gva;
++ 	__u64 hva;
++ };
++ 
++ #define KVM_GET_HVA _IOWR(KVMIO, 0xe1, struct kvm_get_hva)
++ 
++ static void *get_hva(struct kvm_vcpu *vcpu, gva_t addr)
++ {
++ 	gpa_t gpa;
++ 	gfn_t gfn;
++ 	hva_t hva;
++ 
++ 	gpa = vcpu->arch.mmu.gva_to_gpa(vcpu, addr, 0, NULL);
++ 	if (gpa == UNMAPPED_GVA) {
++ 		printk(KERN_WARNING "[%s:%d] UNMAPPED_GVA 0x%lx\n",
++ 		       __FUNCTION__, __LINE__, addr);
++ 		return NULL;
++ 	}
++ 
++ 	gfn = gpa >> PAGE_SHIFT;
++ 	hva = gfn_to_hva(vcpu->kvm, gfn);
++ 	if (kvm_is_error_hva(hva)) {
++ 		printk(KERN_WARNING "[%s:%d] kvm_is_error_hva(0x%lx) <- 0x%lx\n",
++ 		       __FUNCTION__, __LINE__, hva, addr);
++ 		return NULL;
++ 	}
++ 
++ 	hva += offset_in_page(gpa);
++ 
++ 	return (void *)hva;
++ }
++ 
++ static int kvm_vcpu_ioctl_get_hva(struct kvm_vcpu *vcpu,struct kvm_get_hva *gh)
++ {
++ 	void *hva;
++ 
++ 	hva = get_hva(vcpu, gh->gva);
++ 	if (!hva)
++ 		return -EFAULT;
++ 	gh->hva = (__u64)hva;
++ 	return 0;
++ }
++ 
+  static long kvm_vcpu_ioctl(struct file *filp,
+  			   unsigned int ioctl, unsigned long arg)
+  {
+***************
+*** 1602,1607 ****
+--- 1647,1666 ----
+  		r = 0;
+  		break;
+  	}
++ 	case KVM_GET_HVA: {
++ 		struct kvm_get_hva gh;
++ 		r = -EFAULT;
++ 		if (copy_from_user(&gh, argp, sizeof gh))
++ 			goto out;
++ 		r = kvm_vcpu_ioctl_get_hva(vcpu, &gh);
++ 		if(r)
++ 			goto out;
++ 		if (copy_to_user(argp, &gh, sizeof gh)) {
++ 			r = -EFAULT;
++ 			goto out;
++ 		}
++ 		break;
++ 	}
+  	default:
+  		r = kvm_arch_vcpu_ioctl(filp, ioctl, arg);
+  	}
+diff -rcs -x .git kvm-kmod.orig/include/arch/x86/kvm/svm.c kvm-kmod/include/arch/x86/kvm/svm.c
+*** kvm-kmod.orig/include/arch/x86/kvm/svm.c	2010-07-23 17:58:45.000000000 +0900
+--- kvm-kmod/include/arch/x86/kvm/svm.c	2010-07-23 17:49:52.000000000 +0900
+***************
+*** 1402,1409 ****
+  {
+  	svm->next_rip = kvm_rip_read(&svm->vcpu) + 3;
+  	skip_emulated_instruction(&svm->vcpu);
+! 	kvm_emulate_hypercall(&svm->vcpu);
+! 	return 1;
+  }
+  
+  static int nested_svm_check_permissions(struct vcpu_svm *svm)
+--- 1402,1408 ----
+  {
+  	svm->next_rip = kvm_rip_read(&svm->vcpu) + 3;
+  	skip_emulated_instruction(&svm->vcpu);
+! 	return kvm_emulate_hypercall(&svm->vcpu);
+  }
+  
+  static int nested_svm_check_permissions(struct vcpu_svm *svm)
+diff -rcs -x .git kvm-kmod.orig/include/arch/x86/kvm/vmx.c kvm-kmod/include/arch/x86/kvm/vmx.c
+*** kvm-kmod.orig/include/arch/x86/kvm/vmx.c	2010-07-23 17:56:11.000000000 +0900
+--- kvm-kmod/include/arch/x86/kvm/vmx.c	2010-07-23 17:49:12.000000000 +0900
+***************
+*** 3283,3290 ****
+  static int handle_vmcall(struct kvm_vcpu *vcpu)
+  {
+  	skip_emulated_instruction(vcpu);
+! 	kvm_emulate_hypercall(vcpu);
+! 	return 1;
+  }
+  
+  static int handle_vmx_insn(struct kvm_vcpu *vcpu)
+--- 3283,3289 ----
+  static int handle_vmcall(struct kvm_vcpu *vcpu)
+  {
+  	skip_emulated_instruction(vcpu);
+! 	return kvm_emulate_hypercall(vcpu);
+  }
+  
+  static int handle_vmx_insn(struct kvm_vcpu *vcpu)
+diff -rcs -x .git kvm-kmod.orig/include/arch/x86/kvm/x86.c kvm-kmod/include/arch/x86/kvm/x86.c
+*** kvm-kmod.orig/include/arch/x86/kvm/x86.c	2010-07-23 17:58:45.000000000 +0900
+--- kvm-kmod/include/arch/x86/kvm/x86.c	2010-07-23 18:02:49.000000000 +0900
+***************
+*** 3950,3959 ****
+--- 3950,3965 ----
+  		a3 &= 0xFFFFFFFF;
+  	}
+  
++ #if 0
++ 	/*
++ 	 * Ignore CPL checking for a hypercall from user processes
++ 	 * on the gues OS.
++ 	 */
+  	if (kvm_x86_ops->get_cpl(vcpu) != 0) {
+  		ret = -KVM_EPERM;
+  		goto out;
+  	}
++ #endif
+  
+  	switch (nr) {
+  	case KVM_HC_VAPIC_POLL_IRQ:
+***************
+*** 3962,3972 ****
+--- 3968,3985 ----
+  	case KVM_HC_MMU_OP:
+  		r = kvm_pv_mmu_op(vcpu, a0, hc_gpa(vcpu, a1, a2), &ret);
+  		break;
++ 	case KVM_HC_RET_TO_USER:
++ 		r = 0;
++ 		ret = 0;
++ 		vcpu->run->exit_reason = KVM_EXIT_HYPERCALL;
++ 		break;
+  	default:
+  		ret = -KVM_ENOSYS;
+  		break;
+  	}
++ #if 0
+  out:
++ #endif
+  	kvm_register_write(vcpu, VCPU_REGS_RAX, ret);
+  	++vcpu->stat.hypercalls;
+  	return r;
+diff -rcs -x .git kvm-kmod.orig/include/linux/kvm_para.h kvm-kmod/include/linux/kvm_para.h
+*** kvm-kmod.orig/include/linux/kvm_para.h	2010-07-23 17:56:06.000000000 +0900
+--- kvm-kmod/include/linux/kvm_para.h	2010-07-23 17:35:59.000000000 +0900
+***************
+*** 57,62 ****
+--- 57,63 ----
+  
+  #define KVM_HC_VAPIC_POLL_IRQ		1
+  #define KVM_HC_MMU_OP			2
++ #define KVM_HC_RET_TO_USER		12345
+  
+  /*
+   * hypercalls use architecture specific
+diff -rcs -x .git kvm-kmod.orig/x86/kvm_main.c kvm-kmod/x86/kvm_main.c
+*** kvm-kmod.orig/x86/kvm_main.c	2010-07-23 17:56:11.000000000 +0900
+--- kvm-kmod/x86/kvm_main.c	2010-07-22 15:29:32.000000000 +0900
+***************
+*** 1418,1423 ****
+--- 1418,1468 ----
+  	return 0;
+  }
+  
++ struct kvm_get_hva
++ {
++ 	__u64 gva;
++ 	__u64 hva;
++ };
++ 
++ #define KVM_GET_HVA _IOWR(KVMIO, 0xe1, struct kvm_get_hva)
++ 
++ static void *get_hva(struct kvm_vcpu *vcpu, gva_t addr)
++ {
++ 	gpa_t gpa;
++ 	gfn_t gfn;
++ 	hva_t hva;
++ 
++ 	gpa = vcpu->arch.mmu.gva_to_gpa(vcpu, addr, 0, NULL);
++ 	if (gpa == UNMAPPED_GVA) {
++ 		printk(KERN_WARNING "[%s:%d] UNMAPPED_GVA 0x%lx\n",
++ 		       __FUNCTION__, __LINE__, addr);
++ 		return NULL;
++ 	}
++ 
++ 	gfn = gpa >> PAGE_SHIFT;
++ 	hva = gfn_to_hva(vcpu->kvm, gfn);
++ 	if (kvm_is_error_hva(hva)) {
++ 		printk(KERN_WARNING "[%s:%d] kvm_is_error_hva(0x%lx) <- 0x%lx\n",
++ 		       __FUNCTION__, __LINE__, hva, addr);
++ 		return NULL;
++ 	}
++ 
++ 	hva += offset_in_page(gpa);
++ 
++ 	return (void *)hva;
++ }
++ 
++ static int kvm_vcpu_ioctl_get_hva(struct kvm_vcpu *vcpu,struct kvm_get_hva *gh)
++ {
++ 	void *hva;
++ 
++ 	hva = get_hva(vcpu, gh->gva);
++ 	if (!hva)
++ 		return -EFAULT;
++ 	gh->hva = (__u64)hva;
++ 	return 0;
++ }
++ 
+  static long kvm_vcpu_ioctl(struct file *filp,
+  			   unsigned int ioctl, unsigned long arg)
+  {
+***************
+*** 1602,1607 ****
+--- 1647,1666 ----
+  		r = 0;
+  		break;
+  	}
++ 	case KVM_GET_HVA: {
++ 		struct kvm_get_hva gh;
++ 		r = -EFAULT;
++ 		if (copy_from_user(&gh, argp, sizeof gh))
++ 			goto out;
++ 		r = kvm_vcpu_ioctl_get_hva(vcpu, &gh);
++ 		if(r)
++ 			goto out;
++ 		if (copy_to_user(argp, &gh, sizeof gh)) {
++ 			r = -EFAULT;
++ 			goto out;
++ 		}
++ 		break;
++ 	}
+  	default:
+  		r = kvm_arch_vcpu_ioctl(filp, ioctl, arg);
+  	}
+diff -rcs -x .git kvm-kmod.orig/x86/svm.c kvm-kmod/x86/svm.c
+*** kvm-kmod.orig/x86/svm.c	2010-07-23 17:58:45.000000000 +0900
+--- kvm-kmod/x86/svm.c	2010-07-23 17:49:52.000000000 +0900
+***************
+*** 1402,1409 ****
+  {
+  	svm->next_rip = kvm_rip_read(&svm->vcpu) + 3;
+  	skip_emulated_instruction(&svm->vcpu);
+! 	kvm_emulate_hypercall(&svm->vcpu);
+! 	return 1;
+  }
+  
+  static int nested_svm_check_permissions(struct vcpu_svm *svm)
+--- 1402,1408 ----
+  {
+  	svm->next_rip = kvm_rip_read(&svm->vcpu) + 3;
+  	skip_emulated_instruction(&svm->vcpu);
+! 	return kvm_emulate_hypercall(&svm->vcpu);
+  }
+  
+  static int nested_svm_check_permissions(struct vcpu_svm *svm)
+diff -rcs -x .git kvm-kmod.orig/x86/vmx.c kvm-kmod/x86/vmx.c
+*** kvm-kmod.orig/x86/vmx.c	2010-07-23 17:56:11.000000000 +0900
+--- kvm-kmod/x86/vmx.c	2010-07-23 17:49:12.000000000 +0900
+***************
+*** 3283,3290 ****
+  static int handle_vmcall(struct kvm_vcpu *vcpu)
+  {
+  	skip_emulated_instruction(vcpu);
+! 	kvm_emulate_hypercall(vcpu);
+! 	return 1;
+  }
+  
+  static int handle_vmx_insn(struct kvm_vcpu *vcpu)
+--- 3283,3289 ----
+  static int handle_vmcall(struct kvm_vcpu *vcpu)
+  {
+  	skip_emulated_instruction(vcpu);
+! 	return kvm_emulate_hypercall(vcpu);
+  }
+  
+  static int handle_vmx_insn(struct kvm_vcpu *vcpu)
+diff -rcs -x .git kvm-kmod.orig/x86/x86.c kvm-kmod/x86/x86.c
+*** kvm-kmod.orig/x86/x86.c	2010-07-23 17:58:45.000000000 +0900
+--- kvm-kmod/x86/x86.c	2010-07-23 18:02:49.000000000 +0900
+***************
+*** 3950,3959 ****
+--- 3950,3965 ----
+  		a3 &= 0xFFFFFFFF;
+  	}
+  
++ #if 0
++ 	/*
++ 	 * Ignore CPL checking for a hypercall from user processes
++ 	 * on the gues OS.
++ 	 */
+  	if (kvm_x86_ops->get_cpl(vcpu) != 0) {
+  		ret = -KVM_EPERM;
+  		goto out;
+  	}
++ #endif
+  
+  	switch (nr) {
+  	case KVM_HC_VAPIC_POLL_IRQ:
+***************
+*** 3962,3972 ****
+--- 3968,3985 ----
+  	case KVM_HC_MMU_OP:
+  		r = kvm_pv_mmu_op(vcpu, a0, hc_gpa(vcpu, a1, a2), &ret);
+  		break;
++ 	case KVM_HC_RET_TO_USER:
++ 		r = 0;
++ 		ret = 0;
++ 		vcpu->run->exit_reason = KVM_EXIT_HYPERCALL;
++ 		break;
+  	default:
+  		ret = -KVM_ENOSYS;
+  		break;
+  	}
++ #if 0
+  out:
++ #endif
+  	kvm_register_write(vcpu, VCPU_REGS_RAX, ret);
+  	++vcpu->stat.hypercalls;
+  	return r;

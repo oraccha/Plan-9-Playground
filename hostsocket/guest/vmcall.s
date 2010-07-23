@@ -1,0 +1,9 @@
+TEXT vmcall(SB), $0
+	MOVL b+0(FP),BX
+	MOVL c+4(FP),CX
+	MOVL d+8(FP),DX
+	MOVL $12345,AX
+	BYTE $0xf
+	BYTE $0x1
+	BYTE $0xc1
+	RET

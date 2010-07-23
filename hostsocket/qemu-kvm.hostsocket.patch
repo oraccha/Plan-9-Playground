@@ -1,0 +1,356 @@
+From 4fcdd5fe1f474273677a3846a595d997590e5544 Mon Sep 17 00:00:00 2001
+From: oraccha <oraccha@tokyo>
+Date: Fri, 23 Jul 2010 17:23:40 +0900
+Subject: [PATCH] hostsocket method for Plan 9.
+
+This patch is based on go_vm's work from http://circle.paravirt.org/c77.
+
+Changes:
+	- Fixed for 64bit host OS support
+---
+ Makefile.target |    1 +
+ hypercall.c     |  229 +++++++++++++++++++++++++++++++++++++++++++++++++++++++
+ hypercall.h     |   24 ++++++
+ qemu-kvm.c      |   20 +++++
+ qemu-kvm.h      |    1 +
+ 5 files changed, 275 insertions(+), 0 deletions(-)
+ create mode 100644 hypercall.c
+ create mode 100644 hypercall.h
+
+diff --git a/Makefile.target b/Makefile.target
+index 2c92448..7a06468 100644
+--- a/Makefile.target
++++ b/Makefile.target
+@@ -173,6 +173,7 @@ endif #CONFIG_BSD_USER
+ ifdef CONFIG_SOFTMMU
+ 
+ obj-y = arch_init.o cpus.o monitor.o pci.o machine.o gdbstub.o vl.o balloon.o
++obj-y += hypercall.o
+ # virtio has to be here due to weird dependency between PCI and virtio-net.
+ # need to fix this properly
+ obj-y += virtio-blk.o virtio-balloon.o virtio-net.o virtio-serial-bus.o
+diff --git a/hypercall.c b/hypercall.c
+new file mode 100644
+index 0000000..0463998
+--- /dev/null
++++ b/hypercall.c
+@@ -0,0 +1,229 @@
++#include <sys/types.h>
++#include <sys/socket.h>
++#include <netdb.h>
++
++#include "qemu-common.h"
++#include "qemu-kvm.h"
++#include "hypercall.h"
++
++
++void *get_hva(CPUState *env, gva_t addr)
++{
++    int r;
++    struct kvm_get_hva gh;
++
++    gh.gva = addr;
++    r = kvm_vcpu_ioctl(env, KVM_GET_HVA, &gh);
++    if(r < 0){
++	perror("KVM_GET_HVA");
++	return NULL;
++    }
++    return (void *)(uintptr_t)gh.hva;
++}
++
++int copy_from_guest(CPUState *env, void *dest, gva_t src, int len)
++{
++    gva_t addr;
++    char *p, *q;
++    int l;
++
++    addr = src;
++    q = dest;
++    while (len > 0) {
++	p = get_hva(env, addr);
++	if(!p)
++	    return -EFAULT;
++	l = 4096 - (addr & 0xfff);
++	if (l > len)
++	    l = len;
++	memcpy(q, p, l);
++	q += l;
++	addr += l;
++	len -= l;
++    }
++    return 0;
++}
++
++int copy_to_guest(CPUState *env, gva_t dest, void *src, int len)
++{
++    gva_t addr;
++    char *p, *q;
++    int l;
++
++    addr = dest;
++    q = src;
++    while (len > 0) {
++	p = get_hva(env, addr);
++	if(!p) return
++	   -EFAULT;
++	l = 4096 - (addr & 0xfff);
++	if(l > len)
++	    l = len;
++	memcpy(p, q, l);
++	q += l;
++	addr += l;
++	len -= l;
++    }
++    return 0;
++}
++
++
++static int hcall_socket(CPUState *env, gva_t garg, int len)
++{
++    struct {int domain; int type; int protocol;} harg;
++
++    if (sizeof(harg) != len)
++	return -EINVAL;
++    if (copy_from_guest(env, &harg, garg, len))
++	return -EFAULT;
++
++    return socket(harg.domain, harg.type, harg.protocol);
++}
++
++static int hcall_connect(CPUState *env, gva_t garg, int len)
++{
++    struct {
++      int32_t fd;
++      uintptr_t __attribute__((aligned(4))) hostname;
++      int32_t len;
++      int32_t portno;
++    } __attribute__((packed)) harg;
++    struct sockaddr_in addr;
++    struct hostent *hostent;
++    char *hostname;
++    int ret;
++
++    if (sizeof(harg) != len)
++	return -EINVAL;
++
++    if (copy_from_guest(env, &harg, garg, len))
++	return -EFAULT;
++
++    hostname = malloc(harg.len+1);
++    if (!hostname)
++	return -ENOMEM;
++
++    if (copy_from_guest(env, hostname, (gva_t)harg.hostname, harg.len+1)) {
++	ret = -EFAULT;
++	goto out;
++    }
++
++    addr.sin_family = AF_INET;
++    if (!(hostent = gethostbyname(hostname))) {
++	ret =  -EINVAL;
++	goto out;
++    }
++
++    memcpy(&addr.sin_addr, hostent->h_addr, hostent->h_length);
++    addr.sin_port = htons(harg.portno);
++    ret = connect(harg.fd, &addr, sizeof(addr));
++    if(ret < 0)
++	ret = -errno;
++
++out:
++    free(hostname);
++    return ret;
++}
++
++static int hcall_send(CPUState *env,gva_t garg,int len)
++{
++    struct {
++      int32_t fd;
++      uintptr_t __attribute__((aligned(4))) buf;
++      int32_t len;
++      int32_t flags;
++    } __attribute__((packed)) harg;
++    void *buf;
++    int ret;
++
++    if (sizeof(harg) != len)
++	return -EINVAL;
++    if (copy_from_guest(env, &harg, garg, len))
++	return -EFAULT;
++
++    buf = malloc(harg.len);
++    if(!buf)
++	return -ENOMEM;
++    if (copy_from_guest(env, buf, (gva_t)harg.buf, harg.len)) {
++	free(buf);
++	return -EFAULT;
++    }
++
++    ret = send(harg.fd, buf, harg.len, harg.flags);
++    if (ret < 0)
++	ret = -errno;
++    free(buf);
++    return ret;
++}
++
++static int hcall_recv(CPUState *env, gva_t garg, int len)
++{
++    struct {
++      int32_t fd;
++      uintptr_t __attribute__((aligned(4))) buf;
++      int32_t len;
++      int32_t flags;
++    } __attribute__((packed)) harg;
++    void *buf;
++    int ret;
++
++    if (sizeof(harg) != len)
++	return -EINVAL;
++    if (copy_from_guest(env, &harg, garg, len))
++	return -EFAULT;
++
++    buf = malloc(harg.len);
++    if(!buf)
++	return -ENOMEM;
++
++    ret = recv(harg.fd, buf, harg.len, harg.flags);
++    if (ret < 0) {
++	ret = -errno;
++	goto out;
++    }
++
++    if (copy_to_guest(env, (gva_t)harg.buf, buf, ret)) {
++	ret = -EFAULT;
++	goto out;
++    }
++
++out:
++    free(buf);
++    return ret;
++}
++
++static int hcall_close(int fd)
++{
++    return close(fd);
++}
++
++int do_hypercall(kvm_context_t kvm, CPUState *env, struct kvm_run *run,
++		 struct kvm_regs *regs)
++{
++    int ret;
++
++    printf("hypercall %lld 0x%llx %lld\n", regs->rbx, regs->rcx, regs->rdx);
++
++    switch (regs->rbx) {
++    case 0:
++	ret = hcall_socket(env, (gva_t)regs->rcx, (int)regs->rdx);
++	break;
++    case 1:
++	ret = hcall_connect(env, (gva_t)regs->rcx, (int)regs->rdx);
++	break;
++    case 2:
++	ret = hcall_send(env, (gva_t)regs->rcx, (int)regs->rdx);
++	break;
++    case 3:
++	ret = hcall_recv(env, (gva_t)regs->rcx, (int)regs->rdx);
++	break;
++    case 4:
++	ret = hcall_close((int)regs->rcx);
++	break;
++    default:
++	ret = -ENOTTY;
++	break;
++    }
++
++    return ret;
++}
+diff --git a/hypercall.h b/hypercall.h
+new file mode 100644
+index 0000000..2e58177
+--- /dev/null
++++ b/hypercall.h
+@@ -0,0 +1,24 @@
++#ifndef HYPERCALL_H
++#define HYPERCALL_H
++
++#include "qemu-common.h"
++#include "qemu-kvm.h"
++
++#define KVM_GET_HVA _IOWR(KVMIO, 0xe1, struct kvm_get_hva)
++
++typedef uint64_t gva_t;
++
++struct kvm_get_hva
++{
++    uint64_t gva;
++    uint64_t hva;
++};
++
++void *get_hva(CPUState *env, gva_t addr);
++int copy_from_guest(CPUState *env, void *dest, gva_t src, int len);
++int copy_to_guest(CPUState *env, gva_t dest, void *src, int len);
++
++int do_hypercall(kvm_context_t kvm, CPUState *env, struct kvm_run *run,
++		 struct kvm_regs *regs);
++
++#endif /* HYPERCALL_H */
+diff --git a/qemu-kvm.c b/qemu-kvm.c
+index 4f7cf6d..078dec5 100644
+--- a/qemu-kvm.c
++++ b/qemu-kvm.c
+@@ -30,6 +30,8 @@
+ #include "compatfd.h"
+ #include <sys/prctl.h>
+ 
++#include "hypercall.h"
++
+ #define false 0
+ #define true 1
+ 
+@@ -555,6 +557,21 @@ int handle_shutdown(kvm_context_t kvm, CPUState *env)
+     return 1;
+ }
+ 
++int handle_hypercall(kvm_context_t kvm, CPUState *env, struct kvm_run *run)
++{
++    int r;
++    struct kvm_regs regs;
++
++    r = kvm_get_regs(env, &regs);
++    if (r == -1) {
++	perror("KVM_GET_REGS");
++	return 0;
++    }
++
++    run->hypercall.ret = do_hypercall(kvm, env, run, &regs);
++    return 0;
++}
++
+ static inline void push_nmi(kvm_context_t kvm)
+ {
+ #ifdef KVM_CAP_USER_NMI
+@@ -675,6 +692,9 @@ int kvm_run(CPUState *env)
+             kvm_handle_internal_error(env, run);
+             r = 1;
+ 	    break;
++	case KVM_EXIT_HYPERCALL:
++	    r = handle_hypercall(kvm, env, run);
++	    break;
+         default:
+             if (kvm_arch_run(env)) {
+                 fprintf(stderr, "unhandled vm exit: 0x%x\n", run->exit_reason);
+diff --git a/qemu-kvm.h b/qemu-kvm.h
+index 6dd3a01..15e0b31 100644
+--- a/qemu-kvm.h
++++ b/qemu-kvm.h
+@@ -91,6 +91,7 @@ void kvm_show_code(CPUState *env);
+ int handle_halt(CPUState *env);
+ 
+ int handle_shutdown(kvm_context_t kvm, CPUState *env);
++int handle_hypercall(kvm_context_t kvm, CPUState *env, struct kvm_run *run);
+ void post_kvm_run(kvm_context_t kvm, CPUState *env);
+ int pre_kvm_run(kvm_context_t kvm, CPUState *env);
+ int handle_io_window(kvm_context_t kvm);
+-- 
+1.7.1
+
