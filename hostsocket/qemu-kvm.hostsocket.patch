@@ -162,7 +162,7 @@ index 0000000..0463998
 +    return ret;
 +}
 +
-+static int hcall_send(CPUState *env,gva_t garg,int len)
++static int hcall_send(CPUState *env, gva_t garg, int len)
 +{
 +    struct {
 +      int32_t fd;
